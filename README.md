@@ -1,8 +1,6 @@
 # mcp-text-tools
 
-Lightweight text processing tools for AI agents, exposed as a remote MCP server. No AI dependencies — pure deterministic primitives you can call from any MCP-compatible client.
-
-## Tools
+Lightweight text processing tools for AI agents, exposed as a remote MCP server.
 
 | Tool | Description |
 |---|---|
