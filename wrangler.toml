@@ -2,3 +2,10 @@ name = "mcp-text-tools"
 main = "src/index.ts"
 compatibility_date = "2025-04-01"
 compatibility_flags = ["nodejs_compat"]
+
+# Rate limiting KV store
+# Create with: wrangler kv namespace create RATE_LIMIT
+# Then paste the id below.
+[[kv_namespaces]]
+binding = "RATE_LIMIT"
+id = "PASTE_YOUR_KV_NAMESPACE_ID_HERE"
