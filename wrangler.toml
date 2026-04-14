@@ -8,4 +8,4 @@ compatibility_flags = ["nodejs_compat"]
 # Then paste the id below.
 [[kv_namespaces]]
 binding = "RATE_LIMIT"
-id = "PASTE_YOUR_KV_NAMESPACE_ID_HERE"
+id = "5b498575cbf54a0ab96e7082a3ebfa65"
