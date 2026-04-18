@@ -203,10 +203,6 @@ Currently free. Will implement pay per call system at a later date.
 
 Found a bug or have a suggestion? [Open an issue on GitHub](https://github.com/Vgamer1/mcp-text-tools/issues).
 
-## Contributing
-
-Contributions are welcome. See [CONTRIBUTING.md](CONTRIBUTING.md) for how to get started.
-
 ## License
 
 MIT
