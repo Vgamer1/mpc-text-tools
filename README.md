@@ -12,8 +12,6 @@ Lightweight text processing tools for AI agents, exposed as a remote MCP server.
 | `regex_extract` | Extract all regex matches from text with positions and capture groups |
 | `truncate_to_tokens` | Trim text to fit within a token budget without cutting mid-word |
 
-All tools are pay-per-call via Stripe. No subscription required.
-
 ## Quickstart
 
 Add to your MCP client config (Claude Desktop, Cursor, Windsurf, etc.):
@@ -36,8 +34,6 @@ Or connect directly via Claude.ai → Settings → Connectors → Add custom con
 ```
 https://mcp-text-tools.dan-8fc.workers.dev/mcp
 ```
-
-On first use of a paid tool, you'll be prompted to complete a quick Stripe checkout. No account creation required — just a payment method.
 
 ---
 
