@@ -16,3 +16,10 @@ invocation_logs = true
 [[kv_namespaces]]
 binding = "RATE_LIMIT"
 id = "5b498575cbf54a0ab96e7082a3ebfa65"
+
+# Tool requests KV store
+# Create with: wrangler kv namespace create TOOL_REQUESTS
+# Then paste the id below
+[[kv_namespaces]]
+binding = "TOOL_REQUESTS"
+id = "502ed6faf3e649f0a372d458eac51f99"

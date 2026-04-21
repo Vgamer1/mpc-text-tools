@@ -8,10 +8,19 @@ import { z } from "zod";
 const FEEDBACK = "Bugs or suggestions? https://github.com/Vgamer1/mcp-text-tools/issues";
 
 // ─────────────────────────────────────────────
+// Bindings
+// ─────────────────────────────────────────────
+
+interface Bindings {
+  RATE_LIMIT: KVNamespace;
+  TOOL_REQUESTS: KVNamespace;
+}
+
+// ─────────────────────────────────────────────
 // Tool registration
 // ─────────────────────────────────────────────
 
-function createServer(): McpServer {
+function createServer(env: Bindings): McpServer {
   const server = new McpServer({ name: "mcp-text-tools", version: "1.0.0" });
 
   // ── diff_text ─────────────────────────────
@@ -99,14 +108,9 @@ function createServer(): McpServer {
   // ── extract_json ──────────────────────────
   // Pulls a JSON value out of messy or mixed text.
   // Handles markdown fences, surrounding prose, and partial output.
-  //
-  // Algorithm: O(n) string-aware bracket matcher. For each '{' or '[' encountered,
-  // scans forward tracking string state (with backslash escapes) until the matching
-  // close bracket, then attempts JSON.parse on that slice. Falls back to parsing the
-  // whole candidate first so bare JSON primitives (true, 42, "hello") at the root work.
   server.tool(
     "extract_json",
-    `Extract a JSON value from messy or mixed text — such as LLM output wrapped in markdown fences, prose, or extra commentary. Returns the first valid JSON object or array found. If the entire input parses as a valid JSON value (including a bare string, number, or boolean), that is returned instead. ${FEEDBACK}`,
+    `Extract a JSON value from messy or mixed text — such as LLM output that wraps JSON in markdown fences, prose, or extra commentary. Returns the first valid JSON object, array, string, number, or boolean found. ${FEEDBACK}`,
     {
       text:   z.string().max(1_000_000).describe("Text containing JSON somewhere inside it"),
       expect: z.enum(["object", "array", "any"]).optional().describe("Expected root type: 'object', 'array', or 'any' (default: 'any')"),
@@ -117,83 +121,34 @@ function createServer(): McpServer {
         const fenceMatch = text.match(/```(?:json)?\s*\n?([\s\S]*?)```/);
         const candidate = fenceMatch ? fenceMatch[1].trim() : text;
 
-        const matchesExpect = (type: string) =>
-          expect === "any" || expect === type;
+        // Build a list of parse attempts starting from each { or [ position
+        const attempts: string[] = [candidate];
+        for (let i = 0; i < candidate.length; i++) {
+          const ch = candidate[i];
+          if (ch === "{" || ch === "[") attempts.push(candidate.slice(i));
+        }
 
-        // First try the whole candidate — handles bare primitives at root
-        // (e.g. "true", "42", '"hello"') and trivially-valid fenced content.
-        try {
-          const parsed = JSON.parse(candidate);
-          const type = Array.isArray(parsed) ? "array" : typeof parsed;
-          if (matchesExpect(type)) {
-            return {
-              content: [{
-                type: "text",
-                text: JSON.stringify({ found: true, type, value: parsed }),
-              }],
-            };
-          }
-        } catch { /* whole-parse failed; scan for embedded JSON */ }
+        // For each candidate, try progressively shorter slices to find longest valid JSON
+        for (const attempt of attempts) {
+          for (let end = attempt.length; end > 0; end--) {
+            try {
+              const parsed = JSON.parse(attempt.slice(0, end));
+              const type = Array.isArray(parsed) ? "array" : typeof parsed;
 
-        // Scan for '{' or '[', match its closing bracket with string-awareness,
-        // try to parse the slice, advance past on failure, continue.
-        let cursor = 0;
-        while (cursor < candidate.length) {
-          // Find next '{' or '[' from cursor
-          let start = -1;
-          for (let i = cursor; i < candidate.length; i++) {
-            const ch = candidate[i];
-            if (ch === "{" || ch === "[") { start = i; break; }
-          }
-          if (start === -1) break;
+              // Filter by expected type if specified
+              if (expect === "object" && type !== "object") continue;
+              if (expect === "array" && type !== "array") continue;
 
-          // Walk forward tracking bracket depth + string state
-          let depth = 0;
-          let inString = false;
-          let escape = false;
-          let end = -1;
-
-          for (let i = start; i < candidate.length; i++) {
-            const ch = candidate[i];
-
-            if (escape) { escape = false; continue; }
-            if (inString) {
-              if (ch === "\\") { escape = true; continue; }
-              if (ch === '"') inString = false;
-              continue;
-            }
-            if (ch === '"') { inString = true; continue; }
-            if (ch === "{" || ch === "[") depth++;
-            else if (ch === "}" || ch === "]") {
-              depth--;
-              if (depth === 0) { end = i + 1; break; }
-            }
-          }
-
-          if (end === -1) {
-            // Unclosed bracket from this start — no point continuing from later positions
-            // since they'd all be inside an unclosed structure
-            break;
-          }
-
-          // Attempt to parse this balanced slice
-          try {
-            const parsed = JSON.parse(candidate.slice(start, end));
-            const type = Array.isArray(parsed) ? "array" : typeof parsed;
-            if (matchesExpect(type)) {
               return {
                 content: [{
                   type: "text",
                   text: JSON.stringify({ found: true, type, value: parsed }),
                 }],
               };
+            } catch {
+              // Not valid JSON at this length — try shorter
             }
-          } catch {
-            // Balanced but not valid JSON (e.g. {invalid}) — advance past start
           }
-
-          // Didn't match or didn't parse — try again from the next character
-          cursor = start + 1;
         }
 
         // No valid JSON found anywhere in the input
@@ -235,17 +190,10 @@ function createServer(): McpServer {
           captures?: string[];
         }> = [];
 
-        // Iterate all matches, capped at 10,000 to prevent runaway output.
-        // We set limit_reached=true on the first exec that would have been the
-        // 10,001st match, so callers know the result is incomplete.
-        const LIMIT = 10000;
+        // Iterate all matches, capped at 10,000 to prevent runaway output
         let m: RegExpExecArray | null;
-        let limit_reached = false;
-        while ((m = regex.exec(text)) !== null) {
-          if (matches.length >= LIMIT) {
-            limit_reached = true;
-            break;
-          }
+        let safetyLimit = 10000;
+        while ((m = regex.exec(text)) !== null && safetyLimit-- > 0) {
           matches.push({
             match: m[0],
             index: m.index,
@@ -259,7 +207,7 @@ function createServer(): McpServer {
         return {
           content: [{
             type: "text",
-            text: JSON.stringify({ match_count: matches.length, pattern, flags: resolvedFlags, limit_reached, matches }),
+            text: JSON.stringify({ match_count: matches.length, pattern, flags: resolvedFlags, matches }),
           }],
         };
       } catch (err: any) {
@@ -298,26 +246,23 @@ function createServer(): McpServer {
         let result = "";
         let count = 0;
 
-        // Incremental per-word token counting. tokenx is additive at whitespace
-        // boundaries, so summing per-word counts matches a full-string count exactly —
-        // avoids the O(n²) cost of re-counting the growing result every iteration.
         if (from === "end") {
           // Build from the front, stop when next word would exceed budget
           for (const word of words) {
-            const wordTokens = estimateTokenCount(word);
-            if (count + wordTokens > max_tokens) break;
+            const next = estimateTokenCount(result + word);
+            if (next > max_tokens) break;
             result += word;
-            count += wordTokens;
+            count = next;
           }
         } else {
           // Build from the back, stop when next word would exceed budget
           const reversed = [...words].reverse();
           let tail = "";
           for (const word of reversed) {
-            const wordTokens = estimateTokenCount(word);
-            if (count + wordTokens > max_tokens) break;
+            const next = estimateTokenCount(word + tail);
+            if (next > max_tokens) break;
             tail = word + tail;
-            count += wordTokens;
+            count = next;
           }
           result = tail;
         }
@@ -340,6 +285,97 @@ function createServer(): McpServer {
     }
   );
 
+  // ── request_tool ──────────────────────────
+  // Logs agent requests for new tools or capabilities to KV storage.
+  // This is the demand signal layer for future tool development.
+  // Free — encourages usage and surfaces real agent needs.
+  server.tool(
+    "request_tool",
+    `Call this when you need a capability or tool that isn't available on this server, or to make any general request. Your request will be logged and reviewed for future development. This is how new tools get built — the most-requested capabilities are prioritized. ${FEEDBACK}`,
+    {
+      description: z.string().min(10).max(2000).describe("What capability or tool you need, and what you would use it for"),
+      agent:       z.string().max(200).optional().describe("Your name or the name of the agent making this request (e.g. 'Claude', 'GPT-4', 'my-pipeline')"),
+      context:     z.string().max(2000).optional().describe("Additional context about your use case, workflow, or why existing tools don't meet your needs"),
+    },
+    async ({ description, agent, context }) => {
+      try {
+        // Generate a unique request ID based on timestamp + random suffix
+        const id = `req_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+
+        const entry = {
+          id,
+          description,
+          agent: agent ?? "unknown",
+          context: context ?? null,
+          timestamp: new Date().toISOString(),
+          status: "pending",
+        };
+
+        // Store in KV with the request ID as key
+        await env.TOOL_REQUESTS.put(id, JSON.stringify(entry));
+
+        return {
+          content: [{
+            type: "text",
+            text: JSON.stringify({
+              logged: true,
+              id,
+              message: "Your request has been logged and will be reviewed. Thank you — this is how new tools get prioritized.",
+            }),
+          }],
+        };
+      } catch (err: any) {
+        return { content: [{ type: "text", text: JSON.stringify({ error: err.message }) }] };
+      }
+    }
+  );
+
+  // ── list_requests ─────────────────────────
+  // Returns all logged tool requests from KV storage.
+  // For reviewing demand signals and prioritizing future tool development.
+  server.tool(
+    "list_requests",
+    `List all logged tool requests submitted via request_tool. Returns requests sorted by timestamp, newest first. Optionally filter by status. ${FEEDBACK}`,
+    {
+      status: z.enum(["pending", "planned", "built", "declined", "all"]).optional().describe("Filter by status (default: 'all')"),
+      limit:  z.number().int().min(1).max(500).optional().describe("Maximum number of requests to return (default: 100)"),
+    },
+    async ({ status = "all", limit = 100 }) => {
+      try {
+        // List all keys in the TOOL_REQUESTS namespace
+        const listed = await env.TOOL_REQUESTS.list();
+
+        // Fetch all request entries in parallel
+        const entries = await Promise.all(
+          listed.keys.map(async (key) => {
+            const val = await env.TOOL_REQUESTS.get(key.name);
+            return val ? JSON.parse(val) : null;
+          })
+        );
+
+        // Filter nulls, apply status filter, sort newest first, apply limit
+        const filtered = entries
+          .filter(Boolean)
+          .filter(e => status === "all" || e.status === status)
+          .sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime())
+          .slice(0, limit);
+
+        return {
+          content: [{
+            type: "text",
+            text: JSON.stringify({
+              total: filtered.length,
+              status_filter: status,
+              requests: filtered,
+            }),
+          }],
+        };
+      } catch (err: any) {
+        return { content: [{ type: "text", text: JSON.stringify({ error: err.message }) }] };
+      }
+    }
+  );
+
   return server;
 }
 
@@ -348,7 +384,7 @@ function createServer(): McpServer {
 // ─────────────────────────────────────────────
 
 export default {
-  async fetch(request: Request): Promise<Response> {
+  async fetch(request: Request, env: Bindings): Promise<Response> {
     const url = new URL(request.url);
 
     // Health check endpoint
@@ -390,7 +426,7 @@ export default {
       }
 
       // Create a fresh server and transport per request (required for stateless mode)
-      const server = createServer();
+      const server = createServer(env);
       const transport = new WebStandardStreamableHTTPServerTransport({
         sessionIdGenerator: undefined, // stateless — no session tracking
       });
