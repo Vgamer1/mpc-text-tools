@@ -5,7 +5,7 @@ import { estimateTokenCount, splitByTokens } from "tokenx";
 import { z } from "zod";
 
 // Appended to every tool description so agents and users know where to report issues
-const FEEDBACK = "Bugs or suggestions? https://github.com/Vgamer1/mcp-text-tools/issues";
+const FEEDBACK = "Bugs or suggestions? https://github.com/Vgamer1/mcp-workshop/issues";
 
 // ─────────────────────────────────────────────
 // Bindings
@@ -21,7 +21,7 @@ interface Bindings {
 // ─────────────────────────────────────────────
 
 function createServer(env: Bindings): McpServer {
-  const server = new McpServer({ name: "mcp-text-tools", version: "1.0.0" });
+  const server = new McpServer({ name: "mcp-workshop", version: "1.0.0" });
 
   // ── diff_text ─────────────────────────────
   // Compares two strings and returns a unified diff patch.
@@ -375,6 +375,380 @@ function createServer(env: Bindings): McpServer {
       }
     }
   );
+  // ─────────────────────────────────────────────
+// NEW TOOLS — paste these inside createServer(), before `return server;`
+// Also update: McpServer name → "mcp-workshop" (see bottom of this file)
+// ─────────────────────────────────────────────
+
+// ── github_list_prs ───────────────────────────
+// Lists open pull requests for a repo with review status.
+// Requires a GitHub personal access token (classic or fine-grained, repo:read scope).
+server.tool(
+  "github_list_prs",
+  `List open pull requests for a GitHub repository, including review status, author, labels, and CI check state. Pass your GitHub personal access token (repo:read scope) as github_token. ${FEEDBACK}`,
+  {
+    owner:        z.string().max(100).describe("Repository owner (user or org name)"),
+    repo:         z.string().max(100).describe("Repository name"),
+    github_token: z.string().min(1).describe("GitHub personal access token with repo:read scope"),
+    state:        z.enum(["open", "closed", "all"]).optional().describe("Filter by PR state (default: 'open')"),
+    limit:        z.number().int().min(1).max(100).optional().describe("Max PRs to return (default: 30)"),
+  },
+  async ({ owner, repo, github_token, state = "open", limit = 30 }) => {
+    try {
+      const url = `https://api.github.com/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/pulls?state=${state}&per_page=${limit}`;
+      const res = await fetch(url, {
+        headers: {
+          Authorization: `Bearer ${github_token}`,
+          Accept: "application/vnd.github+json",
+          "X-GitHub-Api-Version": "2022-11-28",
+          "User-Agent": "mcp-workshop",
+        },
+      });
+
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({})) as any;
+        return { content: [{ type: "text", text: JSON.stringify({ error: `GitHub API error ${res.status}`, message: err?.message ?? res.statusText }) }] };
+      }
+
+      const prs = await res.json() as any[];
+
+      const result = prs.map((pr: any) => ({
+        number:       pr.number,
+        title:        pr.title,
+        state:        pr.state,
+        author:       pr.user?.login ?? null,
+        draft:        pr.draft ?? false,
+        labels:       (pr.labels ?? []).map((l: any) => l.name),
+        created_at:   pr.created_at,
+        updated_at:   pr.updated_at,
+        url:          pr.html_url,
+        head_branch:  pr.head?.ref ?? null,
+        base_branch:  pr.base?.ref ?? null,
+        mergeable:    pr.mergeable ?? null,
+        comments:     pr.comments ?? 0,
+        review_comments: pr.review_comments ?? 0,
+      }));
+
+      return {
+        content: [{
+          type: "text",
+          text: JSON.stringify({ total: result.length, state_filter: state, pull_requests: result }),
+        }],
+      };
+    } catch (err: any) {
+      return { content: [{ type: "text", text: JSON.stringify({ error: err.message }) }] };
+    }
+  }
+);
+
+// ── github_get_actions_runs ───────────────────
+// Returns recent GitHub Actions workflow run statuses for a repo.
+// Useful for checking CI health, spotting failures, or summarizing build history.
+server.tool(
+  "github_get_actions_runs",
+  `Get recent GitHub Actions workflow run statuses for a repository. Returns run outcome, triggering branch, commit, and duration. Pass your GitHub personal access token (repo:read scope) as github_token. ${FEEDBACK}`,
+  {
+    owner:        z.string().max(100).describe("Repository owner (user or org name)"),
+    repo:         z.string().max(100).describe("Repository name"),
+    github_token: z.string().min(1).describe("GitHub personal access token with repo:read scope"),
+    branch:       z.string().max(255).optional().describe("Filter runs to a specific branch (default: all branches)"),
+    status:       z.enum(["completed", "in_progress", "queued", "all"]).optional().describe("Filter by run status (default: 'all')"),
+    limit:        z.number().int().min(1).max(100).optional().describe("Max runs to return (default: 20)"),
+  },
+  async ({ owner, repo, github_token, branch, status = "all", limit = 20 }) => {
+    try {
+      const params = new URLSearchParams({ per_page: String(limit) });
+      if (branch) params.set("branch", branch);
+      if (status !== "all") params.set("status", status);
+
+      const url = `https://api.github.com/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/actions/runs?${params}`;
+      const res = await fetch(url, {
+        headers: {
+          Authorization: `Bearer ${github_token}`,
+          Accept: "application/vnd.github+json",
+          "X-GitHub-Api-Version": "2022-11-28",
+          "User-Agent": "mcp-workshop",
+        },
+      });
+
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({})) as any;
+        return { content: [{ type: "text", text: JSON.stringify({ error: `GitHub API error ${res.status}`, message: err?.message ?? res.statusText }) }] };
+      }
+
+      const data = await res.json() as any;
+      const runs = (data.workflow_runs ?? []) as any[];
+
+      const result = runs.map((run: any) => {
+        const started  = run.run_started_at ? new Date(run.run_started_at).getTime() : null;
+        const updated  = run.updated_at     ? new Date(run.updated_at).getTime()     : null;
+        const duration_seconds = (started && updated) ? Math.round((updated - started) / 1000) : null;
+
+        return {
+          id:               run.id,
+          name:             run.name,
+          status:           run.status,
+          conclusion:       run.conclusion ?? null,
+          branch:           run.head_branch ?? null,
+          commit_sha:       run.head_sha?.slice(0, 7) ?? null,
+          commit_message:   run.head_commit?.message?.split("\n")[0] ?? null,
+          triggered_by:     run.event ?? null,
+          duration_seconds,
+          started_at:       run.run_started_at ?? null,
+          url:              run.html_url,
+        };
+      });
+
+      // Build a quick summary of pass/fail/in-progress counts
+      const summary = result.reduce((acc: Record<string, number>, r: any) => {
+        const key = r.conclusion ?? r.status ?? "unknown";
+        acc[key] = (acc[key] ?? 0) + 1;
+        return acc;
+      }, {} as Record<string, number>);
+
+      return {
+        content: [{
+          type: "text",
+          text: JSON.stringify({ total: result.length, summary, runs: result }),
+        }],
+      };
+    } catch (err: any) {
+      return { content: [{ type: "text", text: JSON.stringify({ error: err.message }) }] };
+    }
+  }
+);
+
+// ── github_list_issues ────────────────────────
+// Lists issues for a repo with filtering by state, label, and assignee.
+// Note: GitHub's API returns PRs as issues too — this tool filters them out.
+server.tool(
+  "github_list_issues",
+  `List issues for a GitHub repository with optional filtering by state, label, or assignee. Pull requests are excluded. Pass your GitHub personal access token (repo:read scope) as github_token. ${FEEDBACK}`,
+  {
+    owner:        z.string().max(100).describe("Repository owner (user or org name)"),
+    repo:         z.string().max(100).describe("Repository name"),
+    github_token: z.string().min(1).describe("GitHub personal access token with repo:read scope"),
+    state:        z.enum(["open", "closed", "all"]).optional().describe("Filter by issue state (default: 'open')"),
+    label:        z.string().max(200).optional().describe("Filter by label name (single label)"),
+    assignee:     z.string().max(100).optional().describe("Filter by assignee username"),
+    limit:        z.number().int().min(1).max(100).optional().describe("Max issues to return (default: 30)"),
+  },
+  async ({ owner, repo, github_token, state = "open", label, assignee, limit = 30 }) => {
+    try {
+      const params = new URLSearchParams({ state, per_page: String(limit) });
+      if (label)    params.set("labels", label);
+      if (assignee) params.set("assignee", assignee);
+
+      const url = `https://api.github.com/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/issues?${params}`;
+      const res = await fetch(url, {
+        headers: {
+          Authorization: `Bearer ${github_token}`,
+          Accept: "application/vnd.github+json",
+          "X-GitHub-Api-Version": "2022-11-28",
+          "User-Agent": "mcp-workshop",
+        },
+      });
+
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({})) as any;
+        return { content: [{ type: "text", text: JSON.stringify({ error: `GitHub API error ${res.status}`, message: err?.message ?? res.statusText }) }] };
+      }
+
+      const issues = await res.json() as any[];
+
+      // GitHub returns PRs mixed in with issues — exclude them
+      const filtered = issues.filter((i: any) => !i.pull_request);
+
+      const result = filtered.map((issue: any) => ({
+        number:     issue.number,
+        title:      issue.title,
+        state:      issue.state,
+        author:     issue.user?.login ?? null,
+        assignees:  (issue.assignees ?? []).map((a: any) => a.login),
+        labels:     (issue.labels ?? []).map((l: any) => l.name),
+        comments:   issue.comments ?? 0,
+        created_at: issue.created_at,
+        updated_at: issue.updated_at,
+        closed_at:  issue.closed_at ?? null,
+        url:        issue.html_url,
+        body_preview: issue.body ? issue.body.slice(0, 200).replace(/\n/g, " ") : null,
+      }));
+
+      return {
+        content: [{
+          type: "text",
+          text: JSON.stringify({ total: result.length, state_filter: state, issues: result }),
+        }],
+      };
+    } catch (err: any) {
+      return { content: [{ type: "text", text: JSON.stringify({ error: err.message }) }] };
+    }
+  }
+);
+
+// ── parse_json_logs ───────────────────────────
+// Analyzes a JSON log payload and returns a structured summary.
+// Accepts either a JSON array string or newline-delimited JSON (NDJSON).
+// Pure compute — no external calls, 100% margin.
+server.tool(
+  "parse_json_logs",
+  `Analyze JSON log data and return a structured summary: counts by level, top error messages, timeline span, and flagged anomalies. Accepts a JSON array or newline-delimited JSON (NDJSON). No API key required. ${FEEDBACK}`,
+  {
+    logs:        z.string().max(2_000_000).describe("Log data as a JSON array string (e.g. '[{...},{...}]') or newline-delimited JSON (one JSON object per line)"),
+    level_field: z.string().max(50).optional().describe("Name of the field that contains the log level (default: auto-detects 'level', 'severity', 'lvl')"),
+    message_field: z.string().max(50).optional().describe("Name of the field that contains the log message (default: auto-detects 'message', 'msg', 'text', 'error')"),
+    time_field:  z.string().max(50).optional().describe("Name of the timestamp field (default: auto-detects 'timestamp', 'time', 'ts', '@timestamp')"),
+    top_errors:  z.number().int().min(1).max(50).optional().describe("Number of most-frequent error messages to surface (default: 5)"),
+  },
+  async ({ logs, level_field, message_field, time_field, top_errors = 5 }) => {
+    try {
+      // ── Parse input: try JSON array first, fall back to NDJSON ──
+      let entries: Record<string, any>[];
+      const trimmed = logs.trim();
+
+      if (trimmed.startsWith("[")) {
+        // JSON array
+        let parsed: any;
+        try { parsed = JSON.parse(trimmed); } catch {
+          return { content: [{ type: "text", text: JSON.stringify({ error: "Input looks like a JSON array but failed to parse. Check for syntax errors." }) }] };
+        }
+        if (!Array.isArray(parsed)) {
+          return { content: [{ type: "text", text: JSON.stringify({ error: "Parsed value is not an array. Wrap log objects in []." }) }] };
+        }
+        entries = parsed;
+      } else {
+        // NDJSON — one JSON object per line
+        const lines = trimmed.split("\n").filter(l => l.trim().length > 0);
+        const parsed: Record<string, any>[] = [];
+        const parseErrors: number[] = [];
+        lines.forEach((line, i) => {
+          try { parsed.push(JSON.parse(line.trim())); }
+          catch { parseErrors.push(i + 1); }
+        });
+        if (parseErrors.length > 0 && parsed.length === 0) {
+          return { content: [{ type: "text", text: JSON.stringify({ error: `Failed to parse any lines as JSON. First bad line: ${parseErrors[0]}` }) }] };
+        }
+        entries = parsed;
+      }
+
+      if (entries.length === 0) {
+        return { content: [{ type: "text", text: JSON.stringify({ error: "No log entries found in input." }) }] };
+      }
+
+      // ── Auto-detect field names from first entry ──
+      const first = entries[0];
+      const keys = Object.keys(first);
+
+      const resolvedLevelField   = level_field   ?? keys.find(k => ["level", "severity", "lvl", "log_level"].includes(k.toLowerCase())) ?? null;
+      const resolvedMessageField = message_field ?? keys.find(k => ["message", "msg", "text", "error", "err"].includes(k.toLowerCase())) ?? null;
+      const resolvedTimeField    = time_field    ?? keys.find(k => ["timestamp", "time", "ts", "@timestamp", "datetime"].includes(k.toLowerCase())) ?? null;
+
+      // ── Count by level ──
+      const levelCounts: Record<string, number> = {};
+      for (const entry of entries) {
+        const raw = resolvedLevelField ? String(entry[resolvedLevelField] ?? "unknown").toLowerCase() : "unknown";
+        // Normalize common level aliases
+        const level =
+          ["err", "error", "fatal", "critical", "crit"].includes(raw) ? "error" :
+          ["warn", "warning"].includes(raw)                           ? "warn"  :
+          ["info", "information"].includes(raw)                       ? "info"  :
+          ["debug", "trace", "verbose"].includes(raw)                 ? "debug" :
+          raw;
+        levelCounts[level] = (levelCounts[level] ?? 0) + 1;
+      }
+
+      // ── Top error messages ──
+      const errorEntries = entries.filter(e => {
+        if (!resolvedLevelField) return false;
+        const raw = String(e[resolvedLevelField] ?? "").toLowerCase();
+        return ["error", "err", "fatal", "critical", "crit"].includes(raw);
+      });
+
+      const msgFreq: Record<string, number> = {};
+      for (const entry of errorEntries) {
+        if (!resolvedMessageField) break;
+        const msg = String(entry[resolvedMessageField] ?? "").slice(0, 300);
+        if (msg) msgFreq[msg] = (msgFreq[msg] ?? 0) + 1;
+      }
+
+      const topErrorMessages = Object.entries(msgFreq)
+        .sort((a, b) => b[1] - a[1])
+        .slice(0, top_errors)
+        .map(([message, count]) => ({ message, count }));
+
+      // ── Timeline span ──
+      let firstTimestamp: string | null = null;
+      let lastTimestamp:  string | null = null;
+      let spanSeconds:    number | null = null;
+
+      if (resolvedTimeField) {
+        const times: number[] = [];
+        for (const entry of entries) {
+          const raw = entry[resolvedTimeField];
+          if (!raw) continue;
+          const ms = typeof raw === "number"
+            ? (raw > 1e12 ? raw : raw * 1000)  // handle both ms and Unix seconds
+            : new Date(raw).getTime();
+          if (!isNaN(ms)) times.push(ms);
+        }
+        if (times.length > 0) {
+          const minT = Math.min(...times);
+          const maxT = Math.max(...times);
+          firstTimestamp = new Date(minT).toISOString();
+          lastTimestamp  = new Date(maxT).toISOString();
+          spanSeconds    = Math.round((maxT - minT) / 1000);
+        }
+      }
+
+      // ── Anomaly flags ──
+      const anomalies: string[] = [];
+      const errorCount = (levelCounts["error"] ?? 0);
+      const total = entries.length;
+
+      if (errorCount / total > 0.1)  anomalies.push(`High error rate: ${Math.round(errorCount / total * 100)}% of entries are errors`);
+      if (!resolvedLevelField)        anomalies.push("No level field detected — level breakdown unavailable");
+      if (!resolvedMessageField)      anomalies.push("No message field detected — error message analysis unavailable");
+      if (!resolvedTimeField)         anomalies.push("No timestamp field detected — timeline analysis unavailable");
+
+      return {
+        content: [{
+          type: "text",
+          text: JSON.stringify({
+            total_entries:   total,
+            fields_detected: {
+              level:   resolvedLevelField   ?? null,
+              message: resolvedMessageField ?? null,
+              time:    resolvedTimeField    ?? null,
+            },
+            by_level:           levelCounts,
+            timeline: {
+              first:         firstTimestamp,
+              last:          lastTimestamp,
+              span_seconds:  spanSeconds,
+            },
+            top_error_messages: topErrorMessages,
+            anomalies,
+          }),
+        }],
+      };
+    } catch (err: any) {
+      return { content: [{ type: "text", text: JSON.stringify({ error: err.message }) }] };
+    }
+  }
+);
+
+// ─────────────────────────────────────────────
+// OTHER CHANGES NEEDED (not in this snippet):
+// ─────────────────────────────────────────────
+// 1. In createServer(), update McpServer init:
+//      new McpServer({ name: "mcp-workshop", version: "1.0.0" })
+//
+// 2. Update FEEDBACK constant URL to new repo name once renamed:
+//      const FEEDBACK = "Bugs or suggestions? https://github.com/Vgamer1/mcp-workshop/issues";
+//
+// 3. wrangler.toml → name = "mcp-workshop"
+//
+// 4. package.json → "name": "mcp-workshop", update description
 
   return server;
 }
