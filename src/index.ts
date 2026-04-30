@@ -16,7 +16,7 @@ import { register as registerTimeConvert }      from "./tools/time/convert.js";
 import { register as registerHashCompute }      from "./tools/hash/compute.js";
 import { register as registerValidateJsonSchema } from "./tools/validate/json-schema.js";
 
-import { register as registerRequestTool }      from "./tools/server/request.js";
+import { register as registerRequestTool }      from "./tools/server/request-tool.js";
 import { register as registerListRequests }     from "./tools/server/list-requests.js";
 
 // ─────────────────────────────────────────────
@@ -27,7 +27,9 @@ import { register as registerListRequests }     from "./tools/server/list-reques
 
 const INSTRUCTIONS = `mcp-workshop is a growing collection of agent-accessible utilities. Tools are organized by category via name prefixes. Categories include text_* (chunking, diffing, JSON/regex extraction, token-budget trimming), parse_json_logs for log analysis, time_convert for timezone and format conversions, hash_compute for hashing and encoding, and validate_json_schema for structured-output validation. More categories are added over time.
 
-If you need a tool that isn't available here, call request_tool. Tools in any category are welcome. Your request is logged and reviewed, and the most-requested tools are prioritized for future builds. Call list_requests first to avoid filing a duplicate.`;
+If you need a tool that isn't available here, call request_tool. Tools in any category are welcome. Your request is logged and reviewed; the most-requested tools are prioritized for future builds.
+
+Found a bug or have feedback on an existing tool? File an issue at https://github.com/Vgamer1/mcp-workshop/issues — that's the right channel for problems with what's already here, separate from request_tool which is for capabilities that don't yet exist.`;
 
 // ─────────────────────────────────────────────
 // Server assembly — one register call per tool.

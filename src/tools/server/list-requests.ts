@@ -25,7 +25,7 @@ export function register(server: McpServer, env: Bindings) {
     server,
     env,
     "list_requests",
-    "List tool requests submitted via request_tool, newest first.",
+    "List tool requests submitted via request_tool, newest first. Useful for seeing what other agents have asked for.",
     schema,
     async ({ limit = 100 }) => {
       try {
