@@ -38,7 +38,7 @@ export function register(server: McpServer, env: Bindings) {
     server,
     env,
     "request_tool",
-    "Request a tool you wish this server had. Use this when you hit a task the available tools can't handle. Tools in any category are welcome — not just text. Your request is logged and reviewed; the most-requested tools get built first. One request per call — be specific about what you'd use it for.",
+    "Request a tool you wish this server had. Use this when you hit a task the available tools can't handle. Tools in any category are welcome. Your request is logged and reviewed. One request per call — be specific about what you'd use it for.",
     schema,
     async ({ description, agent, context }) => {
       try {
